@@ -1,0 +1,11 @@
+Pt.ID,Old.ID,Age.y.1,Age.y.2,Sex,Hospital,Germline.SBDS.genotype.1,Germline.SBDS.genotype.2,n.cols.WGS.2021
+SDS1,AG3472,4.2,4.2,F,Great-Ormond St,c.258+2T>C,c.183_184TA>CT,21
+SDS2,IC3694,5.8,5.8,F,Manchester,c.258+2T>C,c.183_184TA>CT,43
+SDS3,IJ0435,8.3,8.3,F,Great-Ormond St,c.258+2T>C,c.258+1G>C,25
+SDS4,AC2553,11.1,11.1,F,Great-Ormond St,c.258+2T>C,c.183_184TA>CT,19
+SDS5,HW1563,22.2,24.1,M,Addenbrooke's,c.258+2T>C,c.183_184TA>CT,108
+SDS6,CW3031,23.3,23.3,M,Addenbrooke's,c.258+2T>C_(homozygous),c.183_184TA>CT,28
+SDS7,JH0365,24.9,24.9,M,Addenbrooke's,c.258+2T>C,c.183_184TA>CT,35
+SDS8,SS4265,25,25,F,Bournemouth,c.258+2T>C,c.183_184TA>CT,11
+SDS9,PT8560,26.2,26.2,M,Addenbrooke's,c.258+2T>C,c.183_184TA>CT,29
+SDS10,AP0987,32.8,32.8,M,Addenbrooke's,c.258+2T>C,c.183_184TA>CT,29

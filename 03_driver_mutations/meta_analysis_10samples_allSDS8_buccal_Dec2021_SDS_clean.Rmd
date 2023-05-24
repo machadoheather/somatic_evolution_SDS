@@ -1,0 +1,347 @@
+---
+title: "meta_analysis_10samples_allSDS8_buccal_Dec2021_SDS Dec, 2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache=TRUE, fig.path="./graphics/plot",autodep=TRUE,fig.width=5, fig.height=4)
+library(ggplot2)
+library(RColorBrewer)
+library(cowplot)
+library(caTools)
+library(reshape2)
+library(dplyr)
+library(hdp)
+location="local"
+
+if (location=="farm"){
+  root="/lustre/scratch117/casm/team154/hm8/SDS"
+} else if (location=="local"){
+  root="/Users/hm8/volumes/hm8_scratch117/SDS"
+} else {
+  warning("location not set- using current directory")
+  root=getwd()
+}
+```
+
+
+# Load in each individual dataset
+```{r, message=FALSE, warning=FALSE}
+groupname = "SDS10_allSDS8_buccal"
+variants = read.table("../data/mutation_by_sample.txt", header=T, stringsAsFactors = F, sep="\t")
+burden = read.table("../data/burden_by_sample.txt", header=T, stringsAsFactors = F, sep="\t")
+```
+
+
+# Dnds 
+```{r, message=FALSE, warning=FALSE}
+library("GenomicRanges")
+library("dndscv")
+
+muts_list = list()
+groups = unique(variants$internal_id)
+for (i in 1:length(groups)){
+  # combine mutations, format
+  somsampleDFboth = subset(variants, internal_id==groups[i])
+  somsampleDFboth$ID = paste(somsampleDFboth$Chrom,  somsampleDFboth$Pos, somsampleDFboth$Ref, somsampleDFboth$Alt, sep = "_")
+  muts_list[[i]] = unique(somsampleDFboth[,c("ID","Chrom", "Pos", "Ref", "Alt")])  # remove those in multiple colonies (within donor)
+}
+muts = do.call(rbind, muts_list) #  56918     5
+write.table(muts, file=paste(groupname, "_muts_nodup.txt", sep=""), quote=FALSE, col.names=TRUE, row.names = F)
+
+
+# Run dnds
+#muts = read.table(file=paste(groupname, "_muts_nodup.txt", sep=""), header=T, stringsAsFactors = F, sep=" ")
+my.dndsout = dndscv(muts, max_muts_per_gene_per_sample = 100, max_coding_muts_per_sample = 10000)
+sel_cv = my.dndsout$sel_cv
+sel_cv$n_total = apply(sel_cv[,2:5], MARGIN=1, FUN=sum)
+print(head(sel_cv), digits = 3)
+#       gene_name n_syn n_mis n_non n_spl n_ind wmis_cv wnon_cv wspl_cv wind_cv  pmis_cv ptrunc_cv pallsubs_cv  pind_cv  qmis_cv qtrunc_cv
+# 18057      TP53     0    21     0     0     0    2244       0       0       0 0.00e+00  9.66e-01    0.00e+00 1.00e+00 0.00e+00   0.99790
+# 15006     RPL22     0     2     1     1     2     899   10115   10115    3797 8.37e-06  5.55e-08    1.02e-10 1.41e-07 3.36e-02   0.00111
+# 5631       EIF6     0     4     2     0     1     838    4202    4202     996 2.18e-09  3.41e-07    4.84e-13 1.00e-03 2.19e-05   0.00342
+# 15036      RPL5     0     4     0     0     0     604       0       0       0 8.27e-09  9.65e-01    6.10e-08 1.00e+00 5.54e-05   0.99790
+# 9260      KRT34     0     3     0     0     0     260       0       0       0 4.54e-06  9.66e-01    2.71e-05 1.00e+00 2.28e-02   0.99790
+# 9261      KRT35     0     3     0     0     0     166       0       0       0 1.77e-05  9.59e-01    9.94e-05 1.00e+00 5.94e-02   0.99790
+#       qallsubs_cv pglobal_cv qglobal_cv n_total
+# 18057    0.00e+00   0.00e+00   0.00e+00      21
+# 15006    6.81e-07   5.55e-16   5.58e-12       4
+# 5631     4.86e-09   1.77e-14   1.18e-10       6
+# 15036    3.07e-04   1.07e-06   5.40e-03       4
+# 9260     1.09e-01   3.12e-04   1.00e+00       3
+# 9261     3.33e-01   1.02e-03   1.00e+00       3
+write.table(sel_cv, file=paste(groupname, "_dndsout.txt", sep=""), quote=FALSE, col.names=TRUE, row.names = F)
+write.table(my.dndsout$annotmuts, file=paste(groupname, "_dndsoutANN.txt", sep=""), quote=FALSE, col.names=TRUE, row.names = F)
+my.dndsoutANNnonsyn = my.dndsout$annotmuts[my.dndsout$annotmuts$impact != "Synonymous",]
+write.table(my.dndsoutANNnonsyn, file=paste(groupname, "_dndsoutANNnonsyn.txt", sep=""), quote=FALSE, col.names=TRUE, row.names = F)
+
+variants$ID = paste(variants$Chrom,  variants$Pos, variants$Ref, variants$Alt, sep = "_")
+my.dndsoutANNnonsyn_muts = merge(variants[,c(15,11:14)], my.dndsoutANNnonsyn, by=1)
+write.table(my.dndsoutANNnonsyn_muts, file=paste(groupname, "_dndsoutANNnonsyn_mutsbycolony.txt", sep=""), quote=FALSE, col.names=TRUE, row.names = F)
+
+# my.dndsout$globaldnds
+#      name       mle     cilow   cihigh
+# wmis wmis 1.0390672 0.9156167 1.179162
+# wnon wnon 1.1319619 0.8326100 1.538941
+# wspl wspl 0.9220085 0.6067293 1.401119
+# wtru wtru 1.0522711 0.8142393 1.359888
+# wall wall 1.0415861 0.9195233 1.179852
+write.table(my.dndsout$globaldnds, file=paste(groupname, "_globaldnds.txt", sep=""), quote=FALSE, col.names=TRUE, row.names = F)
+```
+
+
+
+
+# Plotting Dnds and # colonies
+```{r, message=FALSE, warning=FALSE}
+# ## we don't observed the same mutation represented multiple times per donor, expect when IBD, so can remove IBD by removing ID/donor duplicates (already done)
+sel_cv = read.table(file=paste(groupname, "_dndsout.txt", sep=""), header=T, stringsAsFactors = F)
+
+# # stacked based on type of substitution
+sel_cv_subset = sel_cv[1:4,c(1,3:6,19)]
+sel_cv_subset$n_total = apply(sel_cv_subset[,2:5], MARGIN=1, FUN=sum)
+colnames(sel_cv_subset) = c("Gene","missense","nonsense","splicing","frameshift","qglobal_cv","n_total")
+sel_cv_subsetDF = melt(sel_cv_subset, id.vars = c("Gene","qglobal_cv","n_total"))
+
+mycol4 = brewer.pal(n=4, name="Set2")
+ggplot(sel_cv_subsetDF)+
+  geom_col(aes(y=value, x=Gene, fill=variable))+
+  ylab("# mutations (nonsyn.)")+
+  xlab("")+
+  scale_fill_manual("", values=mycol4)+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 32))+
+  geom_text(aes(y=n_total+2, x=Gene, label=paste("dN/dS: \n q<", format(qglobal_cv, scientific=TRUE, digits=1), sep="") ), size=2.5) +
+  theme_cowplot()+
+  theme(#axis.text.x = element_blank(),
+        #axis.ticks.x=element_blank(),
+        legend.text=element_text(size=8),
+        axis.text = element_text(size = 10) )
+ggsave(paste("figures/barplot_Nnonsynon_text_dNdS_impact", groupname, ".pdf", sep=""), width=3.75, height=2.75)
+```
+
+## Number of driver SNV/indel events 
+```{r, message=FALSE, warning=FALSE}
+my.dndsoutANNnonsyn_muts = read.table(file=paste(groupname, "_dndsoutANNnonsyn_mutsbycolony.txt", sep=""), header=T, stringsAsFactors = F)
+library(plyr)
+subset(my.dndsoutANNnonsyn_muts, gene %in% c("EIF6","RPL22","RPL5","TP53") ) %>% group_by(gene) %>% dplyr::summarise(n=n())
+subset(my.dndsoutANNnonsyn_muts, gene %in% c("EIF6","RPL22","RPL5","TP53") ) %>% group_by(gene, impact) %>% dplyr::summarise(n=n())
+```
+
+
+# Plot of proportion of colonies with drivers per donor (NOT NEW)
+```{r, message=FALSE, warning=FALSE}
+sv = read.table("../data/candidateSVs_manual3.txt", header=T, stringsAsFactors = F)
+cnv = read.table("../data/cnv_mapped_to_trees_nodup.txt", header=T, stringsAsFactors = F)
+
+cnvlist = list()
+for (i in 1:5){  # exclude the cnvs on SBS8
+  focal_cnv = cnv[i,]
+  focal_colonies = unlist(strsplit(focal_cnv$long_idx, split=",") )
+  cnvlist[[i]] = data.frame(data.frame(focal_colonies), focal_cnv[,c("label", "chr", "start", "SDS_ID" , "SUPPLIER_ID")])
+}
+cnv_bycolony = do.call(rbind, cnvlist)
+cnv_bycolony$label2= paste("chr",cnv_bycolony$chr,"_cnv", sep="")
+sv$label2 = paste(sv$candidategene,"_del", sep="")
+
+svformat = sv[,c(1,2,3,8,11)]
+svformat$SDS_ID = c("SDS7", "SDS6", "SDS6", "SDS6","SDS7","SDS7","SDS7")
+colnames(svformat) = c("colony","Chrom", "Pos","TYPE", "GENE", "internal_id")
+cnvformat = cnv_bycolony[,c("focal_colonies", "chr"    , "start", "label2","SDS_ID")]
+cnvformat$TYPE = "CNA"
+colnames(cnvformat) = c("colony","Chrom", "Pos", "GENE", "internal_id", "TYPE")
+varformat = subset(variants, GENE %in% c("TP53","EIF6","RPL22","RPL5","PRPF8") & VC %in% c("stop_lost", "ess_splice", "nonsense", "frameshift","inframe","missense","nonsense","start_lost") )[,c("colony","Chrom", "Pos", "GENE", "internal_id","TYPE")]
+# NOT including: 1 downstream (TP53) and 1 splice_region (RPL22)
+varformat_nodup = varformat[!duplicated(varformat[,c(1,2,4,5,6)]),]
+varformat_nodup$GENE[varformat_nodup$internal_id=="SDS8"] = "TP53-biallelic"
+mylist = list(svformat, cnvformat, varformat_nodup)
+candidate_allvar = do.call(rbind, mylist)
+
+## merge with all colonies
+candidate_allcol = merge(burden, candidate_allvar, all.x=TRUE)
+candidate_allcol$GENE[is.na(candidate_allcol$GENE)] = "none"
+countsbygene = data.frame(candidate_allcol %>% group_by(internal_id, GENE) %>% dplyr::summarise(n = n()))
+coloniesbydonor = data.frame(candidate_allcol %>% group_by(internal_id) %>% dplyr::summarise(totaln = n()))
+countsbygene_info = merge(countsbygene, coloniesbydonor, by="internal_id")
+countsbygene_info$prop = countsbygene_info$n / countsbygene_info$totaln
+countsbygene_info$GENE = factor(countsbygene_info$GENE, levels=unique(countsbygene_info$GENE)[c(2,9,8,7,4,10,3,6,5,1)])
+countsbygene_info$internal_id = factor(countsbygene_info$internal_id, levels=unique(countsbygene_info$internal_id)[c(1,3:10,2)] )
+
+mygeneorder = unique(countsbygene_info$GENE)[c(2,9,8,7,4,10,3,6,5)]
+
+# mycol = brewer.pal(n=9,name="Set1")
+# mycol2 = c(mycol[c(2)],"#a6cee3",
+# "#33a02c","#b2df8a", mycol[c(6)], 
+# "#6a3d9a", "#cab2d6",mycol[c(1,7)], "light grey")
+genecolors = read.table("colscheme.txt", sep="\t", comment.char = "", header=T, stringsAsFactors = F)
+mycolvalues = genecolors$colour
+names(mycolvalues) = genecolors$group
+
+ggplot(countsbygene_info, aes(x=internal_id, y=prop, fill=GENE))+
+  geom_col(col="black", size=0.2)+
+  scale_fill_manual("", values=mycolvalues)+
+  theme_bw()+
+  ylab("Proportion of cells")+
+  xlab("")+
+  scale_y_continuous(expand = c(0, 0))+
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(), 
+        axis.line = element_line(),
+        legend.key.size = unit(0.4, 'cm'),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+ggsave(paste("figures/prop_drivers_by_patient_", groupname, ".pdf", sep=""), width=4.5,height=2.75)  # SAME AS OLD
+  
+
+
+## Adding CH genes
+#CHgenes = read.table("../SupplementaryTables/CH_GENES.txt", stringsAsFactors = F)[,1]
+## SDS4, 6, and 9 have one colony with a CH genes
+candidate_allcol2 = candidate_allcol
+candidate_allcol2$GENE[candidate_allcol2$GENE=="EIF6_del"] = "EIF6"
+candidate_allcol2$GENE[candidate_allcol2$colony %in% c("PD43293c","PD45887b_lo0001","PD45889b_lo0001")] = "Other/CH"
+candidate_allcol2$GENE[is.na(candidate_allcol2$GENE)] = "none"
+
+countsbygene = data.frame(candidate_allcol2 %>% group_by(internal_id, GENE) %>% dplyr::summarise(n = n()))
+coloniesbydonor = data.frame(candidate_allcol %>% group_by(internal_id) %>% dplyr::summarise(totaln = n()))
+countsbygene_info2 = merge(countsbygene, coloniesbydonor, by="internal_id")
+countsbygene_info2$prop = countsbygene_info2$n / countsbygene_info2$totaln
+# re-naming
+library(plyr)
+countsbygene_info2$GENE = revalue(countsbygene_info2$GENE, c("chr15_cnv" = "chr15 cnv", "chr7_cnv" = "chr7 cnv", "TP53-biallelic" = "TP53 biallelic") )
+
+countsbygene_info2$GENE = factor(countsbygene_info2$GENE, levels=unique(countsbygene_info2$GENE)[c(2,9,8,4,10,3,6,5,7,1)])
+countsbygene_info2$internal_id = factor(countsbygene_info2$internal_id, levels=unique(countsbygene_info2$internal_id)[c(1,3:10,2)] )
+
+genecolors2 = genecolors
+genecolors2[21,] = c("Other/CH",13,"grey20")
+genecolors2$group = revalue(genecolors2$group, c("chr15_cnv" = "chr15 cnv", "chr7_cnv" = "chr7 cnv", "TP53-biallelic" = "TP53 biallelic") )
+mycolvalues2 = genecolors2$colour
+names(mycolvalues2) = genecolors2$group
+
+ggplot(countsbygene_info2, aes(x=internal_id, y=prop, fill=GENE))+
+  geom_col(col="black", size=0.2)+
+  scale_fill_manual("", values=mycolvalues2)+
+  theme_bw()+
+  ylab("Proportion of cells")+
+  xlab("")+
+  scale_y_continuous(expand = c(0, 0))+
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(), 
+        axis.line = element_line(),
+        legend.key.size = unit(0.4, 'cm'),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggsave(paste("figures/prop_drivers_by_patient_CHgenes_", groupname, ".pdf", sep=""), width=4.5,height=3)  
+```
+
+## percent lineages with drivers
+```{r, message=FALSE, warning=FALSE}
+candidate_allcol$driver[candidate_allcol$internal_id=="SDS8"] = "TP53-biallelic"
+alldriver = subset(candidate_allcol, driver != "Wild Type" & driver != "GPR137B")
+nodriver = subset(candidate_allcol, driver == "Wild Type" | driver == "GPR137B")
+
+# proportion of drivers in individuals with at least one driver. 
+nondriverless = subset(candidate_allcol, !(internal_id %in% c("SDS1","SDS3","SDS9")) )
+driverless = subset(candidate_allcol, internal_id %in% c("SDS1","SDS3","SDS9") )
+
+# proportion per individual
+prop_driverless_per_ind = tapply(candidate_allcol$driver, INDEX=candidate_allcol$internal_id, FUN=function(X) mean(X=="Wild Type"))
+prop_driver_per_ind = 1-prop_driverless_per_ind  
+median(prop_driver_per_ind[prop_driver_per_ind!=0]) #0.4814815
+mean(prop_driver_per_ind[prop_driver_per_ind!=0]) #0.5088487
+
+# 
+mean(nondriverless$driver != "Wild Type") #0.4627451 255  genomes
+```
+
+## expanded lineages (post-embryonic expansion at a frequency of greater than 10%)
+```{r, message=FALSE, warning=FALSE}
+sel_tim = read.table("../data/selection_and_timing_v3.txt", header=T, stringsAsFactors = F, sep="\t", comment.char = "")
+sel_tim[c(6,8:15),c(15:25)]
+```
+
+## Increase in burden of SDS8 over expected
+```{r, message=FALSE, warning=FALSE}
+#                        lower      est.     upper
+#                        lower      est.     upper
+# (Intercept)         76.70196 118.93678 161.17160
+# age_at_sample_exact 13.03060  15.08998  17.14936
+#   y= 15.08998x + 118.93678
+sds8_burden = subset(burden, internal_id == "SDS8")
+15.08998*25 + 118.93678
+# 496.1863
+t.test(sds8_burden$nsub_adj, alternative = "two.sided", mu = 496.1863)
+# data:  sds8_burden$nsub_adj
+# t = 57.919, df = 9, p-value = 6.867e-13
+# alternative hypothesis: true mean is not equal to 496.1863
+# 95 percent confidence interval:
+#  889.4167 921.3824
+# sample estimates:
+# mean of x 
+#  905.3996 
+sd(sds8_burden$nsub_adj)
+```
+
+
+## Create mutation matrix
+```{r, message=FALSE, warning=FALSE}
+# read in GRCh37d5 genome 
+genomeFile = "genome.fa"
+library("GenomicRanges")
+library("Rsamtools")
+library("MASS")
+
+samples = unique(variants$colony)
+mutcounts_matrix = matrix(ncol=length(samples), nrow=96)
+mutcontext_list = list()
+variants2 = subset(variants, is_localx_excluded != 1)
+
+for (focal.sample in 1:length(samples)){
+  subs_only = subset(variants2, colony==samples[focal.sample] )[,1:4]
+  colnames(subs_only) = c("chr","pos","ref","mut")
+  subs_only = subs_only[(subs_only$ref %in% c("A","C","G","T")) & (subs_only$mut %in% c("A","C","G","T")) & subs_only$chr %in% c(1:22,"X","Y"),]
+  subs_only$trinuc_ref = as.vector(scanFa(genomeFile, GRanges(subs_only$chr, IRanges(subs_only$pos-1, subs_only$pos+1))))
+  
+  # 2. Annotating the mutation from the pyrimidine base
+  ntcomp = c(T="A",G="C",C="G",A="T")
+  subs_only$sub = paste(subs_only$ref,subs_only$mut,sep=">")
+  subs_only$trinuc_ref_py = subs_only$trinuc_ref
+  for (j in 1:nrow(subs_only)) {
+    if (subs_only$ref[j] %in% c("A","G")) { # Purine base
+      subs_only$sub[j] = paste(ntcomp[subs_only$ref[j]],ntcomp[subs_only$mut[j]],sep=">")
+      subs_only$trinuc_ref_py[j] = paste(ntcomp[rev(strsplit(subs_only$trinuc_ref[j],split="")[[1]])],collapse="")
+    }
+  }
+  mutcontext_list[[focal.sample]] = subs_only
+  
+  # 3. Counting subs
+  freqs = table(paste(subs_only$sub,paste(substr(subs_only$trinuc_ref_py,1,1),substr(subs_only$trinuc_ref_py,3,3),sep="-"),sep=","))
+  sub_vec = c("C>A","C>G","C>T","T>A","T>C","T>G")
+  ctx_vec = paste(rep(c("A","C","G","T"),each=4),rep(c("A","C","G","T"),times=4),sep="-")
+  full_vec = paste(rep(sub_vec,each=16),rep(ctx_vec,times=6),sep=",")
+  freqs_full = freqs[full_vec]; freqs_full[is.na(freqs_full)] = 0; names(freqs_full) = full_vec
+  
+  xstr = paste(substr(full_vec,5,5), substr(full_vec,1,1), substr(full_vec,7,7), sep="")
+  
+  #dev.new(width=10,height=4)
+  colvec = rep(c("dodgerblue","black","red","grey70","olivedrab3","plum2"),each=16)
+  y = freqs_full; maxy = max(y)
+  mutcounts_matrix[,focal.sample] = y
+  
+  {pdf(file=paste("figures/",groupname, "_triplot_sample",samples[focal.sample],".pdf", sep=""), width=7,height=5)
+  {h=barplot(y, las=2, col=colvec, border=NA, ylim=c(0,maxy*1.5), space=1, cex.names=0.6, names.arg=xstr, ylab="# SNVs")
+  mtext(side=4, text=samples[focal.sample])
+  for (j in 1:length(sub_vec)) {
+    xpos = h[c((j-1)*16+1,j*16)]
+    rect(xpos[1]-0.5, maxy*1.2, xpos[2]+0.5, maxy*1.3, border=NA, col=colvec[j*16])
+    text(x=mean(xpos), y=maxy*1.3, pos=3, label=sub_vec[j])
+  }} 
+  dev.off() }
+}
+names(mutcontext_list) = samples
+colnames(mutcounts_matrix) = samples
+write.table(mutcounts_matrix, file=paste(groupname, "_mutcounts_matrix.txt", sep=""), quote=FALSE, col.names=T, row.names = F)
+```
+
+

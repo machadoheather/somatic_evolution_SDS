@@ -1,0 +1,416 @@
+---
+title: "analyze_hdp_divideshared_10samples_allSDS8_buccal_Dec2021.Rmd"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache=TRUE, fig.path="./graphics/plot",autodep=TRUE,fig.width=5, fig.height=4)
+library(ggplot2)
+library(RColorBrewer)
+library(cowplot)
+library(caTools)
+library(reshape2)
+library(dplyr)
+library(hdp)
+location="local"
+
+if (location=="farm"){
+  root="/lustre/scratch117/casm/team154/hm8/SDS"
+} else if (location=="local"){
+  root="/Users/hm8/volumes/hm8_scratch117/SDS"
+} else {
+  warning("location not set- using current directory")
+  root=getwd()
+}
+```
+
+
+# Load in each individual dataset
+```{r, message=FALSE, warning=FALSE}
+groupname = "SDS10_allSDS8_buccal_divideshared"
+variants = read.table("../data/mutation_by_sample.txt", header=T, stringsAsFactors = F, sep="\t")
+burden = read.table("../data/burden_by_sample.txt", header=T, stringsAsFactors = F, sep="\t")
+```
+
+# distribute shared mutations randomly among shared colonies
+```{r, message=FALSE, warning=FALSE}
+unique = subset(variants, nshared==1 & is_localx_excluded != 1)
+shared = subset(variants, nshared>1 & is_localx_excluded != 1)
+shared_shuff = shared[sample(1:nrow(shared), size=nrow(shared), replace=F),]
+shared_1sample = shared_shuff[!(duplicated(shared_shuff[,c("Chrom",  "Pos", "Ref", "Alt", "internal_id")])), ]
+unique_shared_samples = rbind(unique, shared_1sample)
+```
+
+
+## Create mutation matrix
+```{r, message=FALSE, warning=FALSE}
+# read in GRCh37d5 genome fasta file (must be indexed, etc)
+genomeFile = "genome.fa"
+library("GenomicRanges")
+library("Rsamtools")
+library("MASS")
+
+samples = unique(unique_shared_samples$colony)
+mutcounts_matrix = matrix(ncol=length(samples), nrow=96)
+mutcontext_list = list()
+for (focal.sample in 1:length(samples)){
+  subs_only = subset(unique_shared_samples, colony==samples[focal.sample] )[,1:4]
+  colnames(subs_only) = c("chr","pos","ref","mut")
+  subs_only = subs_only[(subs_only$ref %in% c("A","C","G","T")) & (subs_only$mut %in% c("A","C","G","T")) & subs_only$chr %in% c(1:22,"X","Y"),]
+  subs_only$trinuc_ref = as.vector(scanFa(genomeFile, GRanges(subs_only$chr, IRanges(subs_only$pos-1, subs_only$pos+1))))
+  
+  # 2. Annotating the mutation from the pyrimidine base
+  ntcomp = c(T="A",G="C",C="G",A="T")
+  subs_only$sub = paste(subs_only$ref,subs_only$mut,sep=">")
+  subs_only$trinuc_ref_py = subs_only$trinuc_ref
+  for (j in 1:nrow(subs_only)) {
+    if (subs_only$ref[j] %in% c("A","G")) { # Purine base
+      subs_only$sub[j] = paste(ntcomp[subs_only$ref[j]],ntcomp[subs_only$mut[j]],sep=">")
+      subs_only$trinuc_ref_py[j] = paste(ntcomp[rev(strsplit(subs_only$trinuc_ref[j],split="")[[1]])],collapse="")
+    }
+  }
+  mutcontext_list[[focal.sample]] = subs_only
+  
+  # 3. Counting subs
+  freqs = table(paste(subs_only$sub,paste(substr(subs_only$trinuc_ref_py,1,1),substr(subs_only$trinuc_ref_py,3,3),sep="-"),sep=","))
+  sub_vec = c("C>A","C>G","C>T","T>A","T>C","T>G")
+  ctx_vec = paste(rep(c("A","C","G","T"),each=4),rep(c("A","C","G","T"),times=4),sep="-")
+  full_vec = paste(rep(sub_vec,each=16),rep(ctx_vec,times=6),sep=",")
+  freqs_full = freqs[full_vec]; freqs_full[is.na(freqs_full)] = 0; names(freqs_full) = full_vec
+  xstr = paste(substr(full_vec,5,5), substr(full_vec,1,1), substr(full_vec,7,7), sep="")
+  
+  colvec = rep(c("dodgerblue","black","red","grey70","olivedrab3","plum2"),each=16)
+  y = freqs_full; maxy = max(y)
+  mutcounts_matrix[,focal.sample] = y
+  
+}
+names(mutcontext_list) = samples
+colnames(mutcounts_matrix) = samples
+write.table(mutcounts_matrix, file=paste(groupname, "_mutcounts_matrix.txt", sep=""), quote=FALSE, col.names=F, row.names = F)
+```
+
+## hdp mutational signature extraction
+```{r, message=FALSE, warning=FALSE}
+############# Make samp_type object
+## Must use the vectors of sample names saved with the som2list objects 
+#   (the m3 objects are not in the same order)
+#mutcounts_matrix = read.table(file=paste(groupname, "_mutcounts_matrix.txt", sep=""), header=F, stringsAsFactors = F)
+
+samp_names = samples
+samp_type = data.frame(samp_names = samp_names, cellType="HSC")
+Nsamp = length(samp_names)
+samp_type$ppindex = 1
+samp_type$cpindex = 1+1
+samp_type$dpindex = 2:(Nsamp+1)
+
+# run hdp
+library(hdp)
+
+hdp_mut <- hdp_init(ppindex = c(0, samp_type$ppindex),  # index of parental nodes
+                    cpindex = c(1, samp_type$cpindex), # index of concentration param
+                    hh=rep(1, 96), # prior is uniform over the 96 mutation categories
+                    alphaa=rep(1, max(samp_type$cpindex)), # shape hyperparams for different CPs
+                    alphab=rep(1, max(samp_type$cpindex))) # rate hyperparams for different CPs
+
+hdp_mut <- hdp_setdata(hdp_mut,
+                       dpindex = 2:numdp(hdp_mut),   # index of nodes to add data to
+                       t(mutcounts_matrix[,1:ncol(mutcounts_matrix)]) )   ## flip so samples are in rows
+
+samp_type$dpindex = 2:numdp(hdp_mut)
+
+# Run multiple posterior sampling chains
+chlist <- vector("list", 4)
+for (i in 1:4){   ###### run in parallel, remember to request enough cores when running (plus one extra?)
+  hdp_activated <- dp_activate(hdp_mut, 1:numdp(hdp_mut), initcc=10, seed=i*200)
+  chlist[[i]] <- hdp_posterior(hdp_activated,
+                               burnin=400000,
+                               n=50,
+                               space=200,
+                               cpiter=3,
+                               seed=i*1e3)
+}
+luad_multi <- hdp_multi_chain(chlist)
+name_sigs = "noprior"
+my_prior=""
+save(luad_multi, samp_type, file=paste("luad_multi_first.", name_sigs, ".", groupname, ".Rdata", sep="") )
+#save(m3, file=paste("m3.", groupname, ".Rdata", sep="") )
+```
+
+
+# Initial assessment of hdp results
+```{r, message=FALSE, warning=FALSE}
+# Load in hdp analysis object
+# This is after componenet extraction
+groupname = "SDS10_allSDS8_buccal_divideshared"
+name_sigs="noprior"
+my_prior=""
+load(file=paste("luad_multi_first.", name_sigs, ".", groupname, ".Rdata", sep="") )
+#load(file=paste("m3.", groupname, ".Rdata", sep="") )
+
+#mut_count = mutcounts_matrix_both
+par(mfrow=c(2,2))
+p1 <- lapply(chains(luad_multi), plot_lik, bty='L', start=10) # check for convergence (if not, increase burnin)- 20K is just enough here
+#p2 <- lapply(chains(luad_multi), plot_numcluster, bty='L')
+p3 <- lapply(chains(luad_multi), plot_data_assigned, bty='L')
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Extract components (mutational signatures)
+mut_colours <- c(RColorBrewer::brewer.pal(10, 'Paired')[seq(1,10,2)], 'grey70')
+
+luad_multi <- hdp_extract_components(luad_multi)
+dp_distn = comp_dp_distn(luad_multi)
+comp_trinuc = comp_categ_distn(luad_multi)
+Nsig = ncol(dp_distn$mean)
+
+par(mfrow=c(1,1), mar=c(5, 4, 4, 2))
+plot_comp_size(luad_multi, bty="L")
+
+trinuc_context <- sapply(strsplit(colnames(mut_count), '\\.'), `[`, 4)
+group_factor <- as.factor(rep(c("C>A", "C>G", "C>T", "T>A", "T>C", "T>G"),
+                              each=16))
+
+Ncolumns = ceiling(sqrt(Nsig))
+Nrows = ceiling(Nsig/Ncolumns)
+```
+
+```{r, message=FALSE, warning=FALSE}
+{pdf(file=paste("figures/signatures",name_sigs,"_prior", my_prior, "_", groupname, "_componentsSpectra.pdf", sep=""), width=Ncolumns*3, height=Nrows*3)
+par(mfrow=c(Ncolumns,Nrows))
+par(mar=c(3,3,3,1))
+plot_comp_distn(luad_multi, cat_names=trinuc_context,
+                grouping=group_factor, col=mut_colours,
+                col_nonsig="grey80", show_group_labels=TRUE)}
+plot_comp_distn(luad_multi, cat_names=trinuc_context,
+                grouping=group_factor, col=mut_colours,
+                 col_nonsig="grey80", show_group_labels=TRUE)
+
+{pdf(file=paste("figures/signatures",name_sigs,"_prior", my_prior, "_", groupname, "_componentsSpectra.pdf", sep=""), width=20, height=9)
+par(mfrow=c(Ncolumns,Nrows))
+par(mar=c(3,3,3,1))
+plot_comp_distn(luad_multi, cat_names=trinuc_context,
+                grouping=group_factor, col=mut_colours,
+                col_nonsig="grey80", show_group_labels=TRUE)}
+
+
+# Save mutational spectrum for components
+comp_distn <- comp_categ_distn(luad_multi)
+write.table(t(comp_distn$mean), file=paste("mutspectrum_components.comp_distn_mean.", name_sigs,"_prior", my_prior, ".", groupname, ".txt", sep=""), col.names = T, row.names = F, quote=F)
+
+
+# write signatures individually
+#comp_distn
+#  y=comp_distn$mean[2,]
+
+plot_trinuc = function(y, filename, mymain=NULL){
+  sub_vec = c("C>A","C>G","C>T","T>A","T>C","T>G")
+  ctx_vec = paste(rep(c("A","C","G","T"),each=4),rep(c("A","C","G","T"),times=4),sep="-")
+  full_vec = paste(rep(sub_vec,each=16),rep(ctx_vec,times=6),sep=",")
+  #freqs_full = freqs[full_vec]; freqs_full[is.na(freqs_full)] = 0; names(freqs_full) = full_vec
+  xstr = paste(substr(full_vec,5,5), substr(full_vec,1,1), substr(full_vec,7,7), sep="")
+  colvec = rep(c("dodgerblue","black","red","grey70","olivedrab3","plum2"),each=16)
+  maxy = max(y)
+  pdf(file=filename, width=8,height=4)
+    {h=barplot(y, las=2, col=colvec, border=NA, ylim=c(0,maxy*1.5), space=0.25, cex.names=0.4, names.arg=xstr, ylab="# SNVs")
+  mtext(side=4, text=mymain)
+  for (j in 1:length(sub_vec)) {
+    xpos = h[c((j-1)*16+1,j*16)]
+    rect(xpos[1]-0.5, maxy*1.2, xpos[2]+0.5, maxy*1.3, border=NA, col=colvec[j*16])
+    text(x=mean(xpos), y=maxy*1.3, pos=3, label=sub_vec[j])
+  }  
+  }
+  #dev.off()
+}
+plot_trinuc(y=comp_distn$mean[2,], paste("figures/",groupname, "_triplot_SBSblood.pdf", sep=""), mymain="SBSblood")  
+plot_trinuc(y=comp_distn$mean[3,], paste("figures/",groupname, "_triplot_SBS1.pdf", sep=""), mymain="SBS1")  
+```
+
+## Plot exposures
+```{r, message=FALSE, warning=FALSE}
+plot_dp_comp_exposure(luad_multi, samp_type$dpindex, incl_nonsig = F,
+                      col=c('black', RColorBrewer::brewer.pal(10, "Paired"), "orange","pink", "red"))
+
+
+{pdf(file=paste("figures/plot_dp_comp_exposure_", name_sigs,"_prior", my_prior, groupname, ".pdf", sep="") )
+plot_dp_comp_exposure(luad_multi, samp_type$dpindex, incl_nonsig = F,
+                      col=c('black', RColorBrewer::brewer.pal(10, "Paired"), "orange","pink", "red"))
+}
+
+```
+
+## Extracting components for plotting (sig_prop per sample, CI's)
+```{r, message=FALSE, warning=FALSE}
+inds = samp_type$dpindex
+sig_prop = data.frame(dp_distn$mean[samp_type$dpindex, ], samples = samp_type$samp_names)
+#sig_prop$samples = samp_type$samp_names
+Nsamp = nrow(sig_prop)
+
+dp_distn_lowerCI = data.frame(matrix(ncol=ncol(dp_distn$cred.int[[1]]), nrow=Nsamp))
+dp_distn_upperCI = data.frame(matrix(ncol=ncol(dp_distn$cred.int[[1]]), nrow=Nsamp))
+for (i in inds){
+  focal = dp_distn$cred.int[[i]]
+  dp_distn_lowerCI[i-(min(inds)-1), ] = focal[1,] 
+  dp_distn_upperCI[i-(min(inds)-1), ] = focal[2,] 
+}
+dp_distn_lowerCI$samples = sig_prop$samples
+dp_distn_upperCI$samples = sig_prop$samples
+colnames(dp_distn_lowerCI) = colnames(sig_prop)
+colnames(dp_distn_upperCI) = colnames(sig_prop)
+
+s1 = melt(sig_prop[,2:ncol(sig_prop)], id=c("samples") )
+s2 = melt(dp_distn_lowerCI[,2:ncol(sig_prop)], id=c("samples") )
+s3 = melt(dp_distn_upperCI[,2:ncol(sig_prop)], id=c("samples") )
+sig_propCI = cbind(s1, s2$value, s3$value)
+colnames(sig_propCI) = c("samples","variable","freq","lower","upper")
+sig_propCI$samples = factor(sig_propCI$samples, levels(as.factor(sig_propCI$samples)))
+
+sig_propCI$freqlower = apply(sig_propCI, MARGIN=1, FUN=function(X) if(X[4]<=0) {X[4]} else {X[3]} )
+cols <- brewer.pal(6,"Set1")
+```
+
+
+## Calculate cosine similarity of new signatures to preexisting Cosmic and PCAWG signatures
+```{r, message=FALSE, warning=FALSE}
+####### Reading in blood sig
+blood.sig = read.table("../data/sigfit_cosmic3_bloodsig_Aug2020.txt", header=T)
+
+####### Loading COSMIC signatures
+cosmic.sigs <- read.table('../data/signatures_probabilities.txt', header=TRUE, sep='\t')
+cosmic.sigs <- cosmic.sigs[order(cosmic.sigs$Substitution.Type, cosmic.sigs$Trinucleotide),]
+prior_sigsC <- data.frame(as.matrix(cosmic.sigs[,grep('Signature', colnames(cosmic.sigs))]))
+prior_sigsC$SBSblood = blood.sig$Signature.Blood
+# number of signatures: 31
+
+######## Loading PCAWG signatures
+pcawg.sigs <- read.csv('../data/sigProfiler_SBS_signatures_2018_03_28.csv', header=TRUE)
+#  sort by Substitution Type and Trinucleotide
+pcawg.sigs <- pcawg.sigs[order(pcawg.sigs$Type, pcawg.sigs$SubType),]
+prior_sigsP1 <- as.matrix(pcawg.sigs[,grep('SB', colnames(pcawg.sigs))])
+# number of prior signatures to condition on (65)
+# each col (signatures) must sum to 1 (over all mutation types)
+colsum1 = apply(prior_sigsP1, MARGIN=2, FUN=sum)
+prior_sigsP = prior_sigsP1
+for (i in 1:length(colsum1)){
+  prior_sigsP[,i] = prior_sigsP1[,i]/colsum1[i]
+}
+prior_sigsP = data.frame(prior_sigsP)
+prior_sigsP$SBSblood = blood.sig$Signature.Blood
+
+library("lsa")
+cosmic_cosine = matrix(ncol=Nsig, nrow = ncol(prior_sigsC))
+pcawg_cosine = matrix(ncol=Nsig, nrow = ncol(prior_sigsP))
+for (i in 1:Nsig){
+  cosmic_cosine[,i] = apply(prior_sigsC, MARGIN=2, FUN=function(X) cosine(X, comp_trinuc[[1]][i,]) )  
+  pcawg_cosine[,i] = apply(prior_sigsP, MARGIN=2, FUN=function(X) cosine(X, comp_trinuc[[1]][i,]) )
+}
+
+{pdf(file=paste("figures/signatures",name_sigs,"_prior", my_prior, "_", groupname, "_cosine_sim_Cosmic.pdf", sep=""), width=Ncolumns*1.8, height=Nrows*1.5)
+par(mfrow=c(Nrows,Ncolumns))
+par(mar=c(3,3,3,1))
+for (i in 1:Nsig){
+  hist(cosmic_cosine[,i], main=paste("C:",row.names(comp_trinuc[[1]])[i], " cos=",signif(max(cosmic_cosine[,i]), 2), " S:", which(cosmic_cosine[,i]==max(cosmic_cosine[,i])), sep=""), xlab="cosine sim.", col="grey", breaks=15)
+} }
+
+{pdf(file=paste("figures/signatures",name_sigs,"_prior", my_prior, "_", groupname, "_cosine_sim_PCAWG.pdf", sep=""), width=Ncolumns*1.8, height=Nrows*1.5)
+par(mfrow=c(Nrows,Ncolumns))
+par(mar=c(3,3,3,1))
+for (i in 1:Nsig){
+  hist(pcawg_cosine[,i], main=paste("C:",row.names(comp_trinuc[[1]])[i], " cos=",signif(max(pcawg_cosine[,i]), 2), " ", colnames(prior_sigsP)[which(pcawg_cosine[,i]==max(pcawg_cosine[,i]))], sep=""), xlab="cosine sim.", col="grey", breaks=15)
+} }
+```
+
+
+## Looking at the contributions of each signature to the different cell types
+```{r, message=FALSE, warning=FALSE}
+sampleinfo = burden
+colnames(sampleinfo) = c("colony","age_at_sample_pcy","Age","Donor","Nmut_adj_as","meandepth", "meanvaf")
+sig_prop_type = merge(sampleinfo[,c("colony","Age","Donor","Nmut_adj_as")], sig_prop, by.x="colony", by.y="samples")
+
+# For the no prior analysis
+colnames(sig_prop_type)[5:ncol(sig_prop_type)] = c("X0","SBSblood","SBS1","SBS5")
+save(sig_prop_type, file=paste("sig_prop_type.", groupname, ".Rdata", sep="") )
+```
+
+
+## For stacked barplot
+```{r, message=FALSE, warning=FALSE}
+sig_prop_type_stack = sig_prop_type #[,c(1,3,7,11,13:ncol(sig_prop_type))]
+sig_prop_type_stackO = sig_prop_type_stack[order(sig_prop_type_stack$Nmut_adj_as, decreasing = FALSE),]
+sig_prop_type_stackO$samp_names = apply(sig_prop_type_stackO, MARGIN=1, FUN=function(X)  paste(X[1], X[3], sep = "_"))
+sig_prop_type_stackO$colony = factor(sig_prop_type_stackO$colony, levels=unique(sig_prop_type_stackO$colony) )
+sig_prop_type2_stack = melt(sig_prop_type_stackO, id.vars=c("colony", "Donor", "Age","samp_names","Nmut_adj_as")) # not unattributed
+#sig_prop_type2_stack$variable = factor(sig_prop_type2_stack$variable, levels=c("Sblood","S1","S9","S8","N1","S7","N2","S17","X0"))
+sig_prop_type2_stack$Donor_Age = paste(sig_prop_type2_stack$Donor, sig_prop_type2_stack$Age, sep=": ")
+sig_prop_type2_stack$Donor = factor(as.factor(sig_prop_type2_stack$Donor), levels = levels(as.factor(sig_prop_type2_stack$Donor))[c(1,3:10,2)] )
+
+my10 = brewer.pal(10, "Set1") 
+my_colors = c(my10[2:9],"red","black","lightblue","white") # Cosmic analysis
+ggplot(subset(sig_prop_type2_stack), aes(x=colony, y=value, fill=variable)) +
+  geom_bar(stat="identity") +
+  facet_wrap(.~Donor, scales = "free_x", nrow=2)+
+  xlab("") +
+  ylab("Proportion per genome") +
+  scale_fill_manual("",values=my_colors)+
+  #scale_fill_manual("",values=my_colors, labels=c("Sblood","S1","S9","S8","S7","S17","N2","N3","ns") ) +
+  theme_light() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x=element_blank(),
+        #axis.text = element_text(size = 10),
+        axis.line.x=element_blank(),
+        #legend.justification=c(1,0), legend.position=c(1,0.5),
+        #panel.spacing = unit(1, "lines"),
+        strip.text = element_text(size = 14),
+        strip.text.x = element_text(margin = margin(.1, 0, .1, 0, "cm")) )
+ggsave(file=paste("figures/signatures_", name_sigs,"_prior", my_prior, "_", groupname, "_cellType_stackedBar_Prop_names.pdf", sep=""), width=9,height=6)
+
+
+
+ggplot(subset(sig_prop_type2_stack), aes(x=colony, y=value, fill=variable)) +
+  geom_bar(stat="identity") +
+  facet_wrap(.~Donor, scales = "free_x", nrow=1)+ 
+  xlab("") +
+  ylab("Proportion") +
+  scale_fill_manual("",values=my_colors)+
+  theme_light() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.line.x=element_blank(),
+        strip.text = element_text(size = 10,colour = 'black'),
+        strip.background.x =element_rect(fill="white"),
+        strip.text.x = element_text(margin = margin(.1, 0, .1, 0, "cm")) )
+ggsave(file=paste("figures/signatures_", name_sigs,"_prior", my_prior, "_", groupname, "_cellType_stackedBar_Prop_names_1row.pdf", sep=""), width=15,height=2)
+```
+
+## For stacked barplot: absolute #s
+```{r, message=FALSE, warning=FALSE}
+sig_prop_type_stack_N = cbind(sig_prop_type[,c(1:4)],
+  sig_prop_type[,c(5:7)] * sig_prop_type$Nmut_adj_as)
+sig_prop_type_stackO = sig_prop_type_stack_N[order(sig_prop_type_stack_N$Age, sig_prop_type_stack_N$Donor, sig_prop_type_stack_N$Nmut_adj_as) ,]
+sig_prop_type_stackO$colony = factor(sig_prop_type_stackO$colony, levels=unique(sig_prop_type_stackO$colony) )
+sig_prop_type2_stack = melt(sig_prop_type_stackO, id.vars=c("colony", "Donor", "Age","Nmut_adj_as")) # not unattributed # ,"samp_names"
+sig_prop_type2_stack$Donor_Age = paste(sig_prop_type2_stack$Donor, sig_prop_type2_stack$Age, sep=": ")
+sig_prop_type2_stack$Donor_Age = factor(as.factor(sig_prop_type2_stack$Donor_Age), levels = levels(as.factor(sig_prop_type2_stack$Donor_Age))[c(2,6,7,1,4,5,8,10,11,9,3)] )
+#sig_prop_type2_stack$Donor_Age[sig_prop_type2_stack$Donor_Age=="KX001: 27"] = "Normal: 27"
+
+my10 = brewer.pal(10, "Set1") 
+my_colors = c(my10[2:9],"red","black","lightblue","white") # Cosmic analysis
+ggplot(subset(sig_prop_type2_stack, Donor != "KX001"), aes(x=colony, y=value, fill=variable)) +
+  geom_bar(stat="identity") +
+  facet_wrap(.~Donor_Age, scales = "free_x", nrow=1)+ # , labeller=labeller(Donor_Age = c('KX001: 27'="Normal: 27") ) 
+  xlab("") +
+  ylab("# SNVs per genome") +
+  scale_fill_manual("",values=my_colors)+
+  theme_light() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x=element_blank(),
+        #axis.text = element_text(size = 10),
+        axis.line.x=element_blank(),
+        #legend.justification=c(1,0), legend.position=c(1,0.5),
+        #panel.spacing = unit(1, "lines"),
+        strip.text = element_text(size = 10,colour = 'black'),
+        strip.background.x =element_rect(fill="white"),
+        strip.text.x = element_text(margin = margin(.1, 0, .1, 0, "cm")) )
+ggsave(file=paste("figures/signatures_", name_sigs,"_prior", my_prior, "_", groupname, "_cellType_stackedBar_Num_names.pdf", sep=""), width=15,height=2)
+```
+
